@@ -1,4 +1,4 @@
-package org.com.models;
+package org.com.models.api;
 
 import lombok.AllArgsConstructor;
 import lombok.Getter;
@@ -9,11 +9,10 @@ import lombok.Setter;
 @AllArgsConstructor
 @Setter
 @Getter
-public class MessageRequest {
+public class UserMessage {
     private String userName;
     private String roomId;
     private String message;
-    private MessageStatus messageStatus;
 
     @Override
     public String toString() {
@@ -24,4 +23,3 @@ public class MessageRequest {
                 '}';
     }
 }
-

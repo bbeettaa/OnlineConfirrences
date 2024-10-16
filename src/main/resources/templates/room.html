@@ -15,143 +15,106 @@
     }
 
     #videoCall {
-      width: 60%;
-      height: 40%; /* Full height for video area */
-      background-color: #f8f9fa; /* Light background for video area */
+      flex-grow: 1;
+      /* Allow video area to expand */
+      /* width: 60%; */
+      height: 40%;
+      /* Full height for video area */
+      background-color: #f8f9fa;
+      /* Light background for video area */
+      border: 1px solid #ccc;
+      transition: width 0.3s, height 0.3s;
+      /* Smooth transition */
+    }
+
+    #videoArea {
+      width: 100%;
+      height: 100%;
+      /* Full height for video area */
+      background-color: #f8f9fa;
+      /* Light background for video area */
       border: 1px solid #ccc;
       display: flex;
       justify-content: center;
       align-items: center;
-      margin-right: 20px;
     }
 
+    #clientBtns {
+      position: relative;
+      bottom: 5px;
+      left: 10px;
+    }
+
+
+
     #chatContainer {
-      flex-grow: 1;
       display: flex;
       flex-direction: column;
-      border-left: 1px solid #ccc;
-      padding: 10px;
+      width: 40%;
     }
 
     #messages {
       flex-grow: 1;
-      max-height: calc(100vh - 200px); /* Adjust height based on input area */
+      max-height: calc(100vh - 200px);
+      /* Adjust height based on input area */
       overflow-y: scroll;
       margin-bottom: 10px;
     }
 
     #messageInput {
-      width: calc(100% - 100px); /* Adjusted width for the button */
+      width: calc(100% - 100px);
+      /* Adjusted width for the button */
+    }
+
+    #participants {
+      display: none;
+      /* Hide participants by default */
+      width: 40%;
     }
   </style>
 </head>
 
 <body>
-  <div id="videoCall" class="mb-4">
-    <h2>Video Call Area</h2>
+
+  <div id="videoCall">
+    <div id="videoArea" class="mb-4">
+      <h2>Video Call Area</h2>
+      <video id="localVideo" autoplay muted></video>
+      <video id="remoteVideo" autoplay></video>
+
+    </div>
+    <div id="clientBtns" class="btn-group mt-2">
+      <button class="btn btn-primary" id="toggleChatButton" onclick="toggleChat()">Toggle Chat</button>
+      <button class="btn btn-info" id="showParticipantsButton" onclick="toggleParticipants()">Show Participants</button>
+    </div>
   </div>
 
   <div id="chatContainer">
     <h1 class="text-center">WebSocket Chat</h1>
-    
+
     <div id="messages" class="border rounded p-2"></div>
-    
+
     <div class="input-group">
       <input type="text" id="messageInput" class="form-control" placeholder="Enter your message">
       <div class="input-group-append">
         <button class="btn btn-success" onclick="sendMessage()">Send</button>
       </div>
     </div>
-    
-    <div id="participants" class="mt-3">
-      <h3>Participants</h3>
-      <ul id="participantsList" class="list-group"></ul>
-    </div>
+
   </div>
 
+  <div id="participants" class="mt-3">
+    <h3>Participants</h3>
+    <ul id="participantsList" class="list-group"></ul>
+  </div>
+
+  <script src="room.js"></script>
   <script>
-    const roomId = "1234";
-    const userName = prompt("Enter your name:");
-    const participantsList = document.getElementById("participantsList");
-    let socket;
-    
-    // Функция для отправки сообщения
-    function sendMessage() {
-      const messageInput = document.getElementById("messageInput");
-      const message = messageInput.value;
-      const messageStatus = "MESSAGE";
 
-      if (message) {
-        socket.send(JSON.stringify({ userName, roomId, message, messageStatus }));
-        messageInput.value = ""; // Очищаем поле ввода
-      }
-    }
-
-    // Функция для отображения сообщения в HTML
-    function displayMessage(message) {
-      const messagesDiv = document.getElementById("messages");
-      messagesDiv.innerHTML += `<div>${message}</div>`;
-      messagesDiv.scrollTop = messagesDiv.scrollHeight; // Прокручиваем вниз
-    }
-
-
-    async function createRoom() {
-      const message = "";
-      const messageStatus = "ESTABLISHING";
-
-      const url = `${window.location.origin}/ws/` + roomId;
-      // Открываем WebSocket соединение
-      socket = new WebSocket(url);
-
-      // Отправляем сообщение о подключении
-      socket.onopen = function () {
-        socket.send(JSON.stringify({ userName, roomId, message, messageStatus }));
-      };
-
-      // Получаем сообщение от сервера
-      socket.onmessage = function (event) {
-        onmessage(event);
-      };
-
-      // Обрабатываем закрытие соединения
-      socket.onclose = function () {
-        console.log("Соединение закрыто");
-      };
-
-      // Обрабатываем ошибки
-      socket.onerror = function (error) {
-        console.log("Ошибка: " + error.message);
-      };
-    }
-
-    // Обработка сообщений от сервера
-    function onmessage(event) {
-      const data = JSON.parse(event.data);
-
-      // Проверяем статус сообщения
-      if (data.messageStatus == "PARTICIPANTS") {
-        updateParticipantsList(data.message);
-      } else if (data.messageStatus == "MESSAGE") {
-        // Обработка обычного сообщения
-        displayMessage(`${data.userName}: ${data.message}`);
-      }
-    }
-
-    // Функция для обновления списка участников
-    function updateParticipantsList(participants) {
-      participantsList.innerHTML = ''; // Очищаем список
-      JSON.parse(participants).forEach((participant) => {
-        if (participant) {
-          const li = document.createElement("li");
-          li.textContent = participant;
-          li.className = "list-group-item";
-          participantsList.appendChild(li);
-        }
-      });
-    }
-
+    startVideoCall();
     createRoom();
   </script>
+
 </body>
 
 </html>
