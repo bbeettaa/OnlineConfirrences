@@ -1,4 +1,4 @@
-package org.com.models.api;
+package org.com.models.messages;
 
 import lombok.AllArgsConstructor;
 import lombok.Getter;
@@ -10,6 +10,5 @@ import lombok.Setter;
 @Getter
 @Setter
 public class SdpMessage {
-    private String type;
     private String sdp;
 }

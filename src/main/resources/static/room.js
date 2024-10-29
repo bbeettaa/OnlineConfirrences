@@ -1,13 +1,22 @@
 const roomId = "1234";
 const userName = prompt("Enter your name:");
 const participantsList = document.getElementById("participantsList");
-let socket;
 
-let localStream;
-let remoteStream;
-let peerConnection;
 
-let pendingCandidates = [];
+const ws = new WebSocket('wss://' + location.host + '/stream');
+
+let webRtcPeer;
+
+// UI
+let uiLocalVideo;
+let uiState = null;
+const UI_IDLE = 0;
+const UI_STARTING = 1;
+const UI_STARTED = 2;
+
+const remoteStreams = {};// Object to store remote streams by userId
+let candidateWrappers = []; // Массив для хранения кандидатов с userID
+
 
 
 const videoConstraints = {
@@ -23,70 +32,66 @@ const iceServers = {
 };
 
 // Функция для отправки сообщения
-function sendMessage() {
+function sendChatMessage() {
   const messageInput = document.getElementById("messageInput");
 
-  socket.send(JSON.stringify({
+  ws.send(JSON.stringify({
     "message": {
       userName,
       roomId,
       "message": messageInput.value
     }, "messageStatus": "MESSAGE"
   }));
-  messageInput.value = ""; // Очищаем поле ввода
+  messageInput.value = "";
 }
 
 
-async function createRoom() {
-  const url = `${window.location.origin}/ws/` + roomId;
-  // Открываем WebSocket соединение
-  socket = new WebSocket(url);
-
-  // Отправляем сообщение о подключении
-  socket.onopen = function () {
-    socket.send(JSON.stringify({
-      "message": { userName, roomId, "message": "", },
-      "messageStatus": "ESTABLISHING"
-    }));
-  };
-
-  // Получаем сообщение от сервера
-  socket.onmessage = function (event) {
-    onmessage(event);
-  };
-
-  // Обрабатываем закрытие соединения
-  socket.onclose = function () {
-    console.log("Соединение закрыто");
-  };
-
-  // Обрабатываем ошибки
-  socket.onerror = function (error) {
-    console.log("Ошибка: " + error.message);
-  };
+function sendMessage(message) {
+  if (ws.readyState !== ws.OPEN) {
+    console.warn("[sendMessage] Skip, WebSocket session isn't open");
+    return;
+  }
+  const jsonMessage = JSON.stringify(message);
+  console.log("[sendMessage] message: " + jsonMessage);
+  ws.send(jsonMessage);
 }
 
-// Обработка сообщений от сервера
-function onmessage(event) {
-  const data = JSON.parse(event.data);
-  const msg = JSON.parse(data.message);
 
-  // Проверяем статус сообщения
-  if (data.messageStatus == "PARTICIPANTS") {
-    updateParticipantsList(msg.message);
-  } else if (data.messageStatus == "MESSAGE") {
-    // Обработка обычного сообщения
-    displayMessage(`${msg.message}`);
-  } else if (data.messageStatus === "ICE_CANDIDATE") {
-    // Получили ICE-кандидат
-    handleNewIceCandidate(msg);
-  } else if (data.messageStatus === "VIDEO_ANSWER") {
-    // Получили видео-ответ
-    handleVideoAnswer(msg);
-  }else if (data.messageStatus === "VIDEO_OFFER") { 
-    handleVideoOffer(msg);
+
+ws.onmessage = function (event) {
+  const jsonMessage = JSON.parse(event.data);
+  console.log("[onmessage] Received message: " + event.data);
+
+  switch (jsonMessage.messageStatus) {
+    case 'PARTICIPANTS':
+      updateParticipantsList(jsonMessage.message);
+      break;
+    case 'MESSAGE':
+      let msg = JSON.parse(jsonMessage.message);
+      displayMessage(`${msg.message}`);
+      break;
+    case 'PROCESS_SDP_ANSWER':
+      handleProcessSdpAnswer(jsonMessage);
+      break;
+    case 'ADD_ICE_CANDIDATE':
+      handleAddIceCandidate(jsonMessage);
+      break;
+    case 'ERROR':
+      handleError(jsonMessage);
+      break;
+    default:
+      // Ignore the message
+      console.warn("[onmessage] Invalid message, id: " + jsonMessage.id);
+      break;
   }
 }
+
+ws.onopen = function () {
+  ws.send(JSON.stringify({
+    "message": { userName, roomId, "message": "", },
+    "messageStatus": "ESTABLISHING"
+  }));
+};
 
 // Функция для отображения сообщения в HTML
 function displayMessage(message) {
@@ -96,14 +101,16 @@ function displayMessage(message) {
 }
 
 // Функция для обновления списка участников
-function updateParticipantsList(participants) {
+function updateParticipantsList(message) {
+  participants = JSON.parse(message).message
   participantsList.innerHTML = ''; // Очищаем список
   JSON.parse(participants).forEach((participant) => {
-    if (participant) {
+    if (participant && participant != userName) {
       const li = document.createElement("li");
       li.textContent = participant;
       li.className = "list-group-item";
       participantsList.appendChild(li);
+      startStream(participant)
     }
   });
 }
@@ -120,71 +127,50 @@ function toggleChat() {
   }
 }
 
+// PROCESS_SDP_ANSWER ----------------------------------------------------------
 
-// 7. Обработка видео-предложения (получено через WebSocket)
-function handleVideoOffer(offer) {
-  if (!peerConnection) {
-    createPeerConnection();
+function handleProcessSdpAnswer(jsonMessage) {
+  console.log("[handleProcessSdpAnswer] SDP Answer from Kurento, process in WebRTC Peer");
+
+  if (webRtcPeer == null) {
+    console.warn("[handleProcessSdpAnswer] Skip, no WebRTC Peer");
+    return;
   }
 
+  webRtcPeer.processAnswer(jsonMessage.message, (err) => {
+    if (err) {
+      sendError("[handleProcessSdpAnswer] Error: " + err);
+      stop();
+      return;
+    }
 
-  peerConnection.setRemoteDescription(new RTCSessionDescription(offer))
-    .then(() => {
-      // Добавляем отложенные ICE-кандидаты
-      pendingCandidates.forEach(candidate => {
-        peerConnection.addIceCandidate(candidate)
-          .catch(error => console.error("Ошибка при добавлении отложенного ICE-кандидата: ", error));
-      });
-      pendingCandidates = []; // Очищаем очередь кандидатов
-    })
-    .then(() => {
-      // Получение локального медиа и добавление его в PeerConnection
-      return navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-    })
-    .then(stream => {
-      localStream = stream;
-      document.getElementById('localVideo').srcObject = stream;
-      stream.getTracks().forEach(track => peerConnection.addTrack(track, stream));
-    })
-    .then(() => {
-      // Создание и отправка SDP-ответа
-      return peerConnection.createAnswer();
-    })
-    .then(answer => peerConnection.setLocalDescription(answer))
-    .then(() => {
-      socket.send(JSON.stringify({
-        messageStatus: 'VIDEO_ANSWER',
-        message: peerConnection.localDescription
-      }));
-    })
-    .catch(error => console.error("Ошибка обработки видео-предложения: ", error));
+    console.log("[handleProcessSdpAnswer] SDP Answer ready; start remote video");
+
+
+    // let uiRemoteVideo = addParticipantVideo("testuser").getElementsByTagName("video")[0];
+    startVideo(uiRemoteVideo);
+  });
+  
 }
 
-// 8. Обработка видео-ответа (получено через WebSocket)
-function handleVideoAnswer(answer) {
-  peerConnection.setRemoteDescription(new RTCSessionDescription(answer))
-    .catch(error => console.error("Ошибка при установке удалённого SDP: ", error));
-}
 
-// 9. Обработка ICE-кандидата (получено через WebSocket)
-function handleNewIceCandidate(candidate) {
-  if (peerConnection.remoteDescription && peerConnection.remoteDescription.type) {
-    peerConnection.addIceCandidate(new RTCIceCandidate(candidate))
-      .catch(error => console.error("Ошибка при добавлении ICE-кандидата: ", error));
-  } else {
-    // Сохраняем кандидат в очередь, если удалённая дескрипция ещё не установлена
-    pendingCandidates.push(candidate);
+// ADD_ICE_CANDIDATE -----------------------------------------------------------
+
+function handleAddIceCandidate(jsonMessage) {
+  candidate = JSON.parse(jsonMessage.message)
+  if (webRtcPeer == null) {
+    console.warn("[handleAddIceCandidate] Skip, no WebRTC Peer");
+    return;
   }
+
+  webRtcPeer.addIceCandidate(candidate, (err) => {
+    if (err) {
+      console.error("[handleAddIceCandidate] " + err);
+      return;
+    }
+    console.log("[handleAddIceCandidate] ICE Candidate added: ", candidate);
+  });
 }
-
-
-
-
-
-
-
-
-
 
 function toggleParticipants() {
   const chatContainer = document.getElementById("chatContainer");
@@ -198,72 +184,98 @@ function toggleParticipants() {
   }
 }
 
-async function startVideoCall() {
-  // Создаем PeerConnection заранее
-  createPeerConnection();
-
-  console.log(navigator.mediaDevices);
-
-  // Get user media
-  localStream = await navigator.mediaDevices.getUserMedia(videoConstraints);
-  document.getElementById('localVideo').srcObject = localStream;
-
-  // Set up WebRTC connection
-  peerConnection = new RTCPeerConnection();
-
-  // Add local stream to the connection
-  localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
-
-  // Handle remote stream
-  peerConnection.ontrack = event => {
-    remoteStream = event.streams[0];
-    document.getElementById('remoteVideo').srcObject = remoteStream;
-  };
-
-  // Send signaling data via WebSocket
-  peerConnection.onicecandidate = event => {
-    if (event.candidate) {
-      socket.send(JSON.stringify({
-        "messageStatus": 'ICE_CANDIDATE',
-        "message": event.candidate
-      }));
+function startVideo(video) {
+  // Manually start the <video> HTML element
+  // This is used instead of the 'autoplay' attribute, because iOS Safari
+  // requires a direct user interaction in order to play a video with audio.
+  // Ref: https://developer.mozilla.org/en-US/docs/Web/HTML/Element/video
+  video.play().catch((err) => {
+    if (err.name === 'NotAllowedError') {
+      console.error("[start] Browser doesn't allow playing video: " + err);
     }
-  };
+    else {
+      console.error("[start] Error in video.play(): " + err);
+    }
+  });
+}
 
-  // Create and send offer
-  const offer = await peerConnection.createOffer();
-  await peerConnection.setLocalDescription(offer);
-  socket.send(JSON.stringify({
-    "messageStatus": 'VIDEO_OFFER',
-    "message": offer
-  }));
+window.onload = function () {
+  console.log("Page loaded");
+  uiLocalVideo = document.getElementById('localVideo');
+  // startStream("jsonMessage.userId");
+  navigator.mediaDevices.getUserMedia({ video: true, audio: true })
+  .then((stream) => {
+    uiLocalVideo.srcObject = stream;
+    uiLocalVideo.play();
+  })
+  .catch((error) => {
+    console.error("Ошибка при получении локального медиа-потока: ", error);
+  });
 }
 
 
+// Start -----------------------------------------------------------------------
 
+function startStream(name) {
+  uiRemoteVideo =  addParticipantVideo(name).getElementsByTagName("video")[0]
+  console.log("[start] Create WebRtcPeerSendrecv");
 
-// 1. Инициализация соединения WebRTC
-function createPeerConnection() {
-  peerConnection = new RTCPeerConnection(iceServers);
-
-  // 2. Добавление локальных ICE-кандидатов
-  peerConnection.onicecandidate = event => {
-    if (event.candidate) {
-      socket.send(JSON.stringify({
-        messageStatus: 'ICE_CANDIDATE',
-        candidate: event.candidate
-      }));
-    }
+  const options = {
+    // localVideo: uiLocalVideo,
+    remoteVideo: uiRemoteVideo,
+    mediaConstraints: { audio: true, video: true },
+    onicecandidate: (candidate) => sendMessage({
+      messageStatus: 'ADD_ICE_CANDIDATE',
+      message: candidate,
+    }),
   };
 
-  // 3. Получение удалённого потока и добавление его на видеоэлемент
-  peerConnection.ontrack = event => {
-    if (!remoteStream) {
-      remoteStream = new MediaStream();
-      document.getElementById('remoteVideo').srcObject = remoteStream;
-    }
-    remoteStream.addTrack(event.track);
-  };
+  webRtcPeer = new kurentoUtils.WebRtcPeer.WebRtcPeerSendrecv(options,
+    function (err) {
+      if (err) {
+        sendError("[start/WebRtcPeerSendrecv] Error: " + explainUserMediaError(err));
+        stop();
+        return;
+      }
+
+      console.log("[start/WebRtcPeerSendrecv] Created; start local video");
+      startVideo(uiLocalVideo);
+
+      console.log("[start/WebRtcPeerSendrecv] Generate SDP Offer");
+      webRtcPeer.generateOffer((err, sdp) => {
+        if (err) {
+          sendError("[start/WebRtcPeerSendrecv/generateOffer] Error: " + err);
+          stop();
+          return;
+        }
+
+        sendMessage({
+          messageStatus: 'SDP_OFFER',
+          message: { sdp }
+        });
+
+        // console.log("[start/WebRtcPeerSendrecv/generateOffer] Done!");
+      });
+    });
 }
+
+// Stop ------------------------------------------------------------------------
+
+function uiStop() {
+  stop();
+}
+
+// -----------------------------------------------------------------------------
+
+function sendError(message) {
+  console.error(message);
+
+  sendMessage({
+    messageStatus: 'ERROR',
+    message: message,
+  });
+}
+
+
 
 
