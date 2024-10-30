@@ -14,6 +14,7 @@ import org.com.models.messages.MessageStatus;
 public class MessageRequest {
     private JsonNode message;
     private MessageStatus messageStatus;
+    private String userName;
 
     @Override
     public String toString() {
